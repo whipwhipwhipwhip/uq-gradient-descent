@@ -23,7 +23,7 @@ class ExactGradient:
     def __init__(self, problem: Problem, basis: Basis, n_quad: int = 2**14):
         self.problem, self.basis = problem, basis
         self.nodes, self.weights = basis.quadrature(n_quad)
-        self._B = np.empty((0, n_quad))
+        self._B = np.empty((0, len(self.weights)))
 
     def _basis(self, m):
         if self._B.shape[0] < m:
