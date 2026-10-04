@@ -94,3 +94,55 @@ class LegendreBasis(Basis):
     def Q(self, m):
         # Attained at theta = +-1 where |P_i| = 1.
         return float(m * m)
+
+
+class TensorLegendreBasis(Basis):
+    """Products of normalised Legendre polynomials, orthonormal for theta ~ U[-1, 1]^d.
+
+    Multi-indices are ordered by total degree, so the first m functions span all
+    polynomials of total degree <= p whenever m = binom(p + d, d). Points theta have
+    shape ``(..., d, n)``: the coordinate axis sits just before the sample axis.
+    """
+
+    def __init__(self, d: int, max_degree: int = 40):
+        self.d = d
+        by_degree = [
+            idx
+            for total in range(max_degree + 1)
+            for idx in sorted(_compositions(total, d), reverse=True)
+        ]
+        self.index = np.array(by_degree)
+        self._legendre = LegendreBasis()
+
+    def evaluate(self, theta, m):
+        theta = np.asarray(theta, dtype=float)
+        idx = self.index[:m]
+        P = self._legendre.evaluate(theta, int(idx.max()) + 1)  # (..., d, deg + 1, n)
+        out = np.ones(theta.shape[:-2] + (m, theta.shape[-1]))
+        for j in range(self.d):
+            out *= P[..., j, idx[:, j], :]
+        return out
+
+    def sample(self, rng, size):
+        size = tuple(np.atleast_1d(size))
+        return rng.uniform(-1.0, 1.0, size=size[:-1] + (self.d, size[-1]))
+
+    def quadrature(self, n):
+        """Tensor Gauss-Legendre rule with about n points in total."""
+        k = max(2, int(round(n ** (1 / self.d))))
+        nodes, weights = self._legendre.quadrature(k)
+        grid = np.meshgrid(*[nodes] * self.d, indexing="ij")
+        w = np.ones_like(grid[0])
+        for wj in np.meshgrid(*[weights] * self.d, indexing="ij"):
+            w = w * wj
+        return np.stack([g.ravel() for g in grid]), w.ravel()
+
+    def Q(self, m):
+        # Attained at theta = (1, ..., 1), where every factor equals sqrt(2 i + 1).
+        return float(np.prod(2 * self.index[:m] + 1, axis=1).sum())
+
+
+def _compositions(total, parts):
+    if parts == 1:
+        return [(total,)]
+    return [(i,) + rest for i in range(total + 1) for rest in _compositions(total - i, parts - 1)]
