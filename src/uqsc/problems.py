@@ -168,3 +168,98 @@ class MarkowitzProblem(Problem):
     def optimum(self, theta):
         rhs = self.r + self.turnover * self.w0 + self.budget_penalty
         return np.linalg.solve(self._hessian(theta), rhs[None, :, None])[..., 0].T
+
+
+@dataclass
+class WeightedLogisticProblem(Problem):
+    """Class-reweighted logistic regression of Dong, Grigas & Gupta (AISTATS 2025, Section 6.1).
+
+    f(x, lam) = (1 - lam) mean_{y_i = 1} l_i(x) + lam mean_{y_i = 0} l_i(x) + (ridge / 2) ||x||^2,
+
+    where l_i is the logistic loss of row i, x = (weights, intercept) has q = d + 1 components,
+    and the ridge covers the intercept, so f is ridge-strongly convex. Their setting is
+    ridge = 0.25 on the bar passage data. The parameter is theta ~ U[-1, 1], mapped to
+    lam = (theta + 1) / 2 ~ U[0, 1], so that the Legendre basis on [-1, 1] applies.
+
+    With ``sample_rows=True``, F(x, lam, v) is the loss of a single row v drawn uniformly,
+    reweighted so that E_v F = f: this makes the data a second source of randomness v.
+    """
+
+    ridge: float = 0.25
+    sample_rows: bool = False
+    data: tuple | None = None
+
+    def __post_init__(self):
+        if self.data is None:
+            from .data import bar_passage
+
+            X, y, _ = bar_passage()
+        else:
+            X, y = self.data
+        self.X = np.hstack([X, np.ones((len(X), 1))])  # last coefficient is the intercept
+        self.y = np.asarray(y, dtype=float)
+        self.n_rows, self.q = self.X.shape
+        pos = self.y == 1
+        self._c_pos = pos / pos.sum()
+        self._c_neg = ~pos / (~pos).sum()
+        # The data Hessian is linear in lam, so its largest eigenvalue over lam in [0, 1] is
+        # attained at an endpoint; the logistic curvature is at most 1/4.
+        top = max(np.linalg.eigvalsh(self.X.T @ (c[:, None] * self.X))[-1] for c in (self._c_pos, self._c_neg))
+        self.mu, self.L = self.ridge, self.ridge + top / 4
+        self.V, self.VG = 0.0, 1.0
+
+    @staticmethod
+    def lam(theta):
+        return (np.asarray(theta) + 1.0) / 2.0
+
+    def _row_weights(self, theta):
+        lam = self.lam(theta)[..., None, :]
+        return self._c_pos[:, None] * (1 - lam) + self._c_neg[:, None] * lam  # (..., N, n)
+
+    def mean_grad(self, x, theta, chunk=2**22):
+        # Split along the sample axis so the (..., N, n) intermediates stay below ``chunk`` entries.
+        n = x.shape[-1]
+        step = max(1, chunk // (self.n_rows * max(1, x[..., 0, 0].size)))
+        if n > step:
+            theta = np.broadcast_to(theta, x.shape[:-2] + (n,))
+            return np.concatenate([self.mean_grad(x[..., i:i + step], theta[..., i:i + step], chunk)
+                                   for i in range(0, n, step)], axis=-1)
+        z = np.matmul(self.X, x)
+        r = self._row_weights(theta) * (_sigmoid(z) - self.y[:, None])
+        return np.matmul(self.X.T, r) + self.ridge * x
+
+    def grad(self, x, theta, v=None):
+        if v is None:
+            return self.mean_grad(x, theta)
+        rows = self.X[v]  # (..., n, q)
+        z = np.einsum("...nq,...qn->...n", rows, x)
+        lam = self.lam(theta)
+        weight = self.n_rows * np.where(self.y[v] == 1, self._c_pos.max() * (1 - lam), self._c_neg.max() * lam)
+        r = weight * (_sigmoid(z) - self.y[v])
+        return np.einsum("...nq,...n->...qn", rows, r) + self.ridge * x
+
+    def sample_v(self, rng, size):
+        return rng.integers(0, self.n_rows, size=size) if self.sample_rows else None
+
+    def value(self, x, theta):
+        z = np.matmul(self.X, x)
+        loss = np.logaddexp(0.0, z) - self.y[:, None] * z
+        return np.sum(self._row_weights(theta) * loss, axis=-2) + 0.5 * self.ridge * np.sum(x**2, axis=-2)
+
+    def optimum(self, theta, tol=1e-13, max_iter=50):
+        """x*(lam) at each point of a 1-D theta array, by Newton's method to machine precision."""
+        theta = np.asarray(theta, dtype=float)
+        x = np.zeros((self.q, theta.shape[-1]))
+        w = self._row_weights(theta)
+        for _ in range(max_iter):
+            g = self.mean_grad(x, theta)
+            if np.abs(g).max() < tol:
+                break
+            s = _sigmoid(self.X @ x)
+            H = np.einsum("iq,in,ip->nqp", self.X, w * s * (1 - s), self.X) + self.ridge * np.eye(self.q)
+            x -= np.linalg.solve(H, g.T[..., None])[..., 0].T
+        return x
+
+
+def _sigmoid(z):
+    return 0.5 * (1.0 + np.tanh(0.5 * z))
