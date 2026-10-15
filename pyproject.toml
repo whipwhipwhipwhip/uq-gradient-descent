@@ -14,6 +14,7 @@ dev = ["pytest>=7"]
 
 [project.scripts]
 uqsc-experiments = "uqsc.experiments:main"
+uqsc-paper = "uqsc.paper:main"
 
 [build-system]
 requires = ["hatchling"]

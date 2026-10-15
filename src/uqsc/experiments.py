@@ -1,22 +1,24 @@
-"""Reproduce the experiments of Section 6.
+"""Every experiment, including those not in the paper.
 
-    uqsc-experiments all
     uqsc-experiments fig1a fig3 --trials 50 --out results
+    uqsc-experiments ablation_batch1 --cost-trials 20 --paper
 
-Every figure uses the quadratic (6.2) (or its noisy variant (6.3)) with target x* from
-(6.1), the trigonometric basis on theta ~ U[-pi, pi], and plots the mean over trials of
-||u^k - P_{m_k}(u*)||^2, which excludes the algorithm-independent truncation error.
+To reproduce exactly the figures and tables of the paper, use ``uqsc-paper`` (paper.py),
+which runs the experiments below with the paper's settings and names the outputs by their
+number in the paper. Experiment names here are historical: ``fig3`` is the paper's Fig. 2.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import pickle
 import time
 import warnings
 from pathlib import Path
 
 import matplotlib
+import matplotlib.ticker
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -34,9 +36,9 @@ from .algorithms import (  # noqa: E402
     uq_gradient_descent,
 )
 from .baselines import adaptive_learn_solution_path, learn_solution_path, naive_monte_carlo  # noqa: E402
-from .basis import TensorLegendreBasis, TrigBasis  # noqa: E402
+from .basis import LegendreBasis, TensorLegendreBasis, TrigBasis  # noqa: E402
 from .gradients import ExactGradient, MonteCarloGradient  # noqa: E402
-from .problems import MarkowitzProblem, NoisyQuadraticProblem, QuadraticProblem  # noqa: E402
+from .problems import MarkowitzProblem, NoisyQuadraticProblem, QuadraticProblem, WeightedLogisticProblem  # noqa: E402
 
 # Embedding matplotlib's bundled cmr10 font makes fontTools warn about its old timestamps.
 logging.getLogger("fontTools").setLevel(logging.ERROR)
@@ -161,8 +163,8 @@ def fig1b(args):
     noisy_est = MonteCarloGradient(noisy, basis, n_samples=500)
     gd_v = uq_gradient_descent(noisy_est, schedule, K, gd_step_size(noisy, basis, noisy_est), seed=args.seed + 3,
                                q=noisy.q, reference=ref, n_trials=args.trials)
-    curves = {"GD": gd.mean_error, "AGD": agd.mean_error, "SGD": sa.mean_error, "GD, noise in $v$": gd_v.mean_error}
-    colors = {**COLORS, "GD, noise in $v$": COLORS["GD"]}
+    curves = {"GD": gd.mean_error, "AGD": agd.mean_error, "SA": sa.mean_error, "GD, noise in $v$": gd_v.mean_error}
+    colors = {**COLORS, "SA": COLORS["SGD"], "GD, noise in $v$": COLORS["GD"]}
     styles = {"GD, noise in $v$": dict(ls="--")}
     _plot(curves, f"Fig. 1b: Monte Carlo gradients (M=500, {args.trials} trials)", args.out / "fig1b", colors,
           paper=args.paper, styles=styles)
@@ -539,8 +541,7 @@ def comparison(args):
 def schedules(args):
     """Sensitivity to the growth schedule: one extra total degree every 25, 75 or 200 iterations (V = 0)."""
     problem, basis, ref, tail = _markowitz()
-    degree_max = 10
-    n_trials = max(5, args.trials // 40)
+    degree_max, n_trials = 10, args.cost_trials
     est = MonteCarloGradient(problem, basis, n_samples=_proportional_samples(basis))
     alpha, beta = agd_parameters(problem.mu, 1 / problem.L)
     every = [25, 75, 200]
@@ -548,25 +549,23 @@ def schedules(args):
     for i, e in enumerate(every):
         schedule = _degree_schedule(every=e, final=degree_max)
         label = f"every {e} iterations"
-        runs = {
-            "UQ-GD": uq_gradient_descent(est, schedule, 1500 + 10 * e, gd_step_size(problem, basis, est),
-                                         q=problem.q, reference=ref, n_trials=n_trials, seed=args.seed + i),
-            "UQ-AGD": uq_accelerated_gradient_descent(est, schedule, 600 + 10 * e, alpha, beta, q=problem.q,
-                                                      reference=ref, n_trials=n_trials, seed=args.seed + 10 + i),
-        }
-        for method, res in runs.items():
-            evals = np.cumsum([est.n_samples(k, m) for k, m in enumerate(res.levels, start=1)]).astype(float)
-            panels[method][label] = (evals, res.mean_error + np.array([tail(m) for m in res.levels]))
+        common = dict(q=problem.q, reference=ref, n_trials=n_trials)
+        panels["UQ-GD"][label] = _batched_curve(uq_gradient_descent(
+            est, schedule, 1500 + 10 * e, gd_step_size(problem, basis, est), seed=args.seed + i, **common), est, tail)
+        panels["UQ-AGD"][label] = _batched_curve(uq_accelerated_gradient_descent(
+            est, schedule, 600 + 10 * e, alpha, beta, seed=args.seed + 10 + i, **common), est, tail)
     for method, curves in panels.items():
         print(f"  {method}:")
         _reach_table(curves)
+    _write_schedules_table(panels, every, args.out / "schedules_table")
 
     colors = dict(zip(panels["UQ-GD"], [SERIES[0], SERIES[1], SERIES[2]]))
 
     def build(paper):
         fig, axes = plt.subplots(1, 2, figsize=(6.5, 2.6) if paper else (11, 4.2), sharey=True, layout="constrained")
         for ax, (method, curves) in zip(axes, panels.items()):
-            for label, (x, y) in curves.items():
+            for label, (x, y, lo, hi) in curves.items():
+                ax.fill_between(x, lo, hi, color=colors[label], alpha=0.15, lw=0)
                 ax.plot(x, y, lw=1.2 if paper else 1.8, color=colors[label], label=label)
             ax.set_xscale("log")
             ax.set_yscale("log")
@@ -581,6 +580,33 @@ def schedules(args):
 
     data = {f"{method} {label}": c for method, curves in panels.items() for label, c in curves.items()}
     _save(build, args.out / "schedules", args.paper, data)
+
+
+def _sci_tex(v):
+    """One significant figure in LaTeX, e.g. 6 \\times 10^{5}."""
+    if not np.isfinite(v):
+        return "--"
+    mantissa, exponent = f"{v:.0e}".split("e")
+    return rf"${mantissa} \times 10^{{{int(exponent)}}}$"
+
+
+def _write_schedules_table(panels, every, path, levels=(1e-4, 1e-6, 1e-8)):
+    """Gradient evaluations to first reach each error level, per method and growth rate (paper Table 3)."""
+    lines = ["| Method | Degree increase rate | " + " | ".join(f"{t:.0e}" for t in levels) + " |",
+             "|---|---|" + "---|" * len(levels)]
+    tex = [r"\begin{tabular}{ll" + "c" * len(levels) + "}", r"\toprule",
+           "Method & Degree increase rate & " + " & ".join(rf"$10^{{{int(np.log10(t))}}}$" for t in levels) + r" \\",
+           r"\midrule"]
+    for method, curves in panels.items():
+        name = method.removeprefix("UQ-")
+        for e, (x, y, *_) in zip(every, curves.values()):
+            reach = [_reach(x, y, t) for t in levels]
+            lines.append(f"| {name} | every {e} | " + " | ".join(f"{r:.0e}" if np.isfinite(r) else "-" for r in reach) + " |")
+            tex.append(f"{name} & every {e} & " + " & ".join(_sci_tex(r) for r in reach) + r" \\")
+    tex += [r"\bottomrule", r"\end{tabular}"]
+    path.with_suffix(".md").write_text("\n".join(lines) + "\n")
+    path.with_suffix(".tex").write_text("\n".join(tex) + "\n")
+    print(f"  saved {path.with_suffix('.md')} and .tex")
 
 
 def comparison_adaptive(args):
@@ -862,33 +888,277 @@ def revalidate_extended(args):
             print(f"{name}: unchanged settings, not rerun")
 
 
-SECTION6 = {
-    "fig1a": "6.1 - exact gradients (paper Fig. 1a)",
-    "fig1b": "6.1 - Monte Carlo gradients, incl. GD with noise in v (Fig. 1b; absorbs old Fig. 2)",
-    "fig3": "6.1 - fixed vs. growing basis (Fig. 3, schedule power 0.7)",
-    "lemma31": "6.2 - Lemma 3.1 check (pair with markowitz)",
-    "markowitz": "6.2 - GD/AGD convergence with noisy returns (pair with lemma31)",
-    "markowitz_uq": "6.2 - distributions of optimal weights (full width) + markowitz_uq_table.tex",
-    "comparison": "6.3 - comparison with Dong et al. and naive MC (full width)",
-    "comparison_adaptive": "6.3 (optional) - same, with ALSP's stall rule for both UQ methods (full width)",
-    "ablation_batch1": "6.3 (ablation) - accelerated SGD at batch size 1 diverges",
-    "ablation_increment": "6.3 / appendix - stall rule with one-function vs. one-degree growth",
-    "schedules": "6.4 - sensitivity to the growth schedule (full width)",
-}
+# ---------------------------------------------------------------------------
+# Weighted logistic regression of Dong et al. (AISTATS 2025), with a sweep over kappa
+# ---------------------------------------------------------------------------
+
+LOGISTIC_RIDGES = (0.25, 1 / 16, 1 / 64, 1 / 256)  # 0.25 is Dong et al.'s setting (kappa ~ 16)
+LOGISTIC_LEVELS = (1e-3, 1e-5, 1e-7)  # relative errors ||u - u*||^2 / ||u*||^2 reported in tables
+LOGISTIC_ALSP_CHECKS = (250, 1000, 4000)
+LOGISTIC_WINDOWS = (2, 5)
+LOGISTIC_QUAD = 128  # Gauss points for the stall rule's objective (ample for a 1-D basis of <= 48 functions)
 
 
-def section6(args):
-    """Every figure of the proposed Section 6 layout, written to <out>/section6."""
-    args.out = args.out / "section6"
-    args.out.mkdir(parents=True, exist_ok=True)
-    lines = ["# Section 6 figures", "", "| File | Placement |", "|---|---|"]
-    for name, placement in SECTION6.items():
-        print(f"{name}:")
+def _logistic_setup(ridge, sample_rows=False):
+    """Problem, basis, reference coefficients, tail function, m_max and worst-case metric."""
+    problem, basis = WeightedLogisticProblem(ridge=ridge, sample_rows=sample_rows), LegendreBasis()
+    ref = basis.coefficients(problem.optimum, 64, 256)
+    norm2 = float(np.sum(ref**2))
+    tails = norm2 - np.cumsum(np.sum(ref**2, axis=0))
+    m_max = int(min(48, np.argmax(tails <= 1e-8 * norm2) + 1 if np.any(tails <= 1e-8 * norm2) else 48))
+    tail = lambda m: max(tails[m - 1], 0.0)  # noqa: E731
+
+    # Worst-case suboptimality over a lambda grid, the solution-path error of Dong et al.
+    grid = np.linspace(-1, 1, 101)
+    B_grid = basis.evaluate(grid, 64)
+    f_star = problem.value(problem.optimum(grid), grid)
+
+    def worst_case(u, m):
+        x = np.matmul(u[:, :, :m], B_grid[:m])
+        return np.max(problem.value(x, grid) - f_star, axis=-1)
+
+    return problem, basis, ref, norm2, tail, m_max, worst_case
+
+
+def _relative(curve, norm2):
+    x, *rest = curve
+    return (x, *(r / norm2 for r in rest))
+
+
+def _extra_curve(res, x):
+    """(x, mean, lo, hi) of the recorded extra metric."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        lo, hi = np.nanpercentile(res.extra, BAND, axis=0)
+    return x, res.extra.mean(axis=0), lo, hi
+
+
+def _logistic_runs(problem, basis, ref, norm2, tail, m_max, metric, n_trials, seed, alsp_check=None, window=None,
+                   fixed=True):
+    """Tuned ALSP (if ``alsp_check``), UQ-AGD with a fixed schedule (if ``fixed``) and adaptive UQ-AGD
+    (if ``window``); returns {label: (relative L2 curve, worst-case curve)}."""
+    kappa = problem.kappa
+    common = dict(reference=ref, n_trials=n_trials, metric=metric)
+    out = {}
+    est = MonteCarloGradient(problem, basis, n_samples=_proportional_samples(basis))
+    alpha, beta = agd_parameters(problem.mu, 1 / problem.L)
+    every = int(np.ceil(3 * np.sqrt(kappa)))
+    K = m_max * every + int(40 * np.sqrt(kappa))
+
+    if alsp_check is not None:
+        _logistic_alsp(out, problem, basis, ref, norm2, tail, m_max, common, seed, alsp_check)
+    if fixed:
         t0 = time.perf_counter()
-        FIGURES[name](args)
-        print(f"  ({time.perf_counter() - t0:.0f}s)")
-        lines.append(f"| `{name}` | {placement} |")
-    (args.out / "README.md").write_text("\n".join(lines) + "\n")
+        res = uq_accelerated_gradient_descent(est, lambda k: min(m_max, 1 + (k - 1) // every), K, alpha, beta,
+                                              q=problem.q, seed=seed + 1, record_at=_record_points(K), **common)
+        curve = _batched_curve(res, est, tail)
+        out["UQ-AGD, fixed schedule"] = (_relative(curve, norm2), _extra_curve(res, curve[0]))
+        print(f"    UQ-AGD fixed schedule ({K} iterations, one function every {every}): {time.perf_counter() - t0:.0f}s")
+    if window is not None:
+        t0 = time.perf_counter()
+        K_adaptive = 2 * K
+        res = adaptive_uq_descent(problem, basis, est, 1, m_max, K_adaptive, alpha=alpha, beta=beta,
+                                  check_every=window, tol=1e-3, seed=seed, record_at=_record_points(K_adaptive),
+                                  n_quad=LOGISTIC_QUAD, **common)
+        curve = _batched_curve(res, est, tail)
+        out["UQ-AGD, stall rule"] = (_relative(curve, norm2), _extra_curve(res, curve[0]))
+        print(f"    UQ-AGD stall rule ({K_adaptive} iterations, window {window}): {time.perf_counter() - t0:.0f}s")
+    return out
+
+
+LOGISTIC_ALSP_BUDGET = 25  # ALSP steps = factor * Q_{m_max} * kappa
+
+
+def _logistic_alsp(out, problem, basis, ref, norm2, tail, m_max, common, seed, alsp_check):
+    kappa = problem.kappa
+    n_sgd = int(basis.Q(m_max) * kappa * LOGISTIC_ALSP_BUDGET)
+    t0 = time.perf_counter()
+    res = adaptive_learn_solution_path(problem, basis, 1, m_max, n_sgd, check_every=alsp_check, tol=1e-2, seed=seed + 5,
+                                       record_at=_record_points(n_sgd), n_quad=LOGISTIC_QUAD, **common)
+    curve = _sgd_curve(res, tail)
+    out["ALSP"] = (_relative(curve, norm2), _extra_curve(res, curve[0]))
+    print(f"    ALSP ({n_sgd:.1e} steps, check every {alsp_check}): {time.perf_counter() - t0:.0f}s")
+
+
+def logistic_kappa(args):
+    """Dong et al.'s weighted logistic regression, at several ridge values (and hence kappa).
+
+    Protocol, fixed before running:
+    * error is ||u - u*||^2 / ||u*||^2, so levels are comparable across kappa; Dong et al.'s
+      worst-case suboptimality over lambda is recorded alongside;
+    * m_max is the smallest m with ||R_m||^2 <= 1e-8 ||u*||^2;
+    * ALSP is tuned over check intervals LOGISTIC_ALSP_CHECKS (threshold 1e-2), and adaptive
+      UQ-AGD over windows LOGISTIC_WINDOWS, with --sweep-trials trials; each is selected by the
+      fewest evaluations to 1e-5 (ties at 1e-7) and rerun with --cost-trials trials;
+    * UQ-AGD with a fixed schedule adds one function every ceil(3 sqrt(kappa)) iterations (Section 6.4).
+    """
+    global LOGISTIC_ALSP_BUDGET
+    ridges = args.ridges or LOGISTIC_RIDGES
+    if args.alsp_budget:
+        LOGISTIC_ALSP_BUDGET = args.alsp_budget
+    rows, curves_by_kappa, t_start = [], {}, time.perf_counter()
+    for ridge in ridges:
+        problem, basis, ref, norm2, tail, m_max, metric = _logistic_setup(ridge)
+        kappa = problem.kappa
+        print(f"  ridge {ridge:g}: kappa = {kappa:.1f}, m_max = {m_max}, Q = {basis.Q(m_max):.0f}")
+        setup = (problem, basis, ref, norm2, tail, m_max, metric)
+
+        def best(results, label):
+            return min(results, key=lambda key: tuple(
+                np.nan_to_num([_reach(*results[key][label][0][:2], t) for t in LOGISTIC_LEVELS[1:]], nan=np.inf)))
+
+        if args.logistic_settings:
+            alsp_check, window = args.logistic_settings  # reduced protocol: settings tuned at another kappa
+            print(f"   no sweep: ALSP check every {alsp_check}, stall window {window} (given)")
+        else:
+            print("   sweep:")
+            sweep_alsp = {c: _logistic_runs(*setup, args.sweep_trials, args.seed, alsp_check=c, fixed=False)
+                          for c in LOGISTIC_ALSP_CHECKS}
+            sweep_window = {w: _logistic_runs(*setup, args.sweep_trials, args.seed, window=w, fixed=False)
+                            for w in LOGISTIC_WINDOWS}
+            alsp_check, window = best(sweep_alsp, "ALSP"), best(sweep_window, "UQ-AGD, stall rule")
+            print(f"   selected: ALSP check every {alsp_check}, stall window {window} "
+                  f"({time.perf_counter() - t_start:.0f}s so far)")
+        final = _logistic_runs(*setup, args.cost_trials, args.seed + 100, alsp_check=alsp_check, window=window)
+        with open(args.out / f"logistic_ridge_{ridge:g}.pkl", "wb") as fh:
+            pickle.dump(dict(ridge=ridge, kappa=kappa, m_max=m_max, alsp_check=alsp_check, window=window,
+                             trials=args.cost_trials, tuned=not args.logistic_settings,
+                             alsp_budget=LOGISTIC_ALSP_BUDGET, final=final), fh)
+        print(f"   ({time.perf_counter() - t_start:.0f}s so far)")
+
+    _logistic_summary(args)
+
+
+def _logistic_summary(args):
+    """Table and figure from every logistic_ridge_*.pkl in the output directory."""
+    rows, curves_by_kappa = [], {}
+    for path in sorted(args.out.glob("logistic_ridge_*.pkl")):
+        with open(path, "rb") as fh:
+            saved = pickle.load(fh)
+        ridge, kappa, m_max, final = saved["ridge"], saved["kappa"], saved["m_max"], saved["final"]
+        tuned_over = saved.get("alsp_tuned_over")
+        protocol = f"{saved['trials']}" + ("" if saved.get("tuned", True) else
+                                          f", ALSP tuned over {tuned_over}" if tuned_over else ", untuned")
+        curves_by_kappa[kappa] = final
+        base = [_reach(*final["ALSP"][0][:2], t) for t in LOGISTIC_LEVELS]
+        for label, (l2, worst) in final.items():
+            reach = [_reach(*l2[:2], t) for t in LOGISTIC_LEVELS]
+            rows.append((ridge, kappa, m_max, label, reach, [b / r for b, r in zip(base, reach)], worst[1][-1],
+                         protocol))
+    rows.sort(key=lambda r: (r[1], r[3]))
+
+    fmt = lambda v: f"{v:.1e}" if np.isfinite(v) else "-"  # noqa: E731
+    lines = ["# Weighted logistic regression: kappa sweep", "",
+             "Gradient evaluations to first reach each relative error ||u - u*||^2 / ||u*||^2; speedup over "
+             "ALSP in brackets; final worst-case suboptimality over lambda (Dong et al.'s measure). "
+             "'Trials' gives the number of trials, and 'untuned' marks settings carried over from another kappa.", "",
+             "| ridge | kappa | m_max | trials | method | " + " | ".join(f"{t:.0e}" for t in LOGISTIC_LEVELS)
+             + " | sqrt(kappa)/2 | final worst case |",
+             "|---|---|---|---|---|" + "---|" * len(LOGISTIC_LEVELS) + "---|---|"]
+    for ridge, kappa, m_max, label, reach, speed, worst, protocol in rows:
+        cells = [f"{fmt(r)} ({s:.1f})" if np.isfinite(r) and np.isfinite(s) else fmt(r) for r, s in zip(reach, speed)]
+        lines.append(f"| {ridge:g} | {kappa:.0f} | {m_max} | {protocol} | {label} | " + " | ".join(cells)
+                     + f" | {np.sqrt(kappa) / 2:.1f} | {worst:.1e} |")
+    (args.out / "logistic_kappa.md").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines))
+
+    kappas = np.array(sorted(curves_by_kappa))
+    speedups = {label: np.array([[_reach(*curves_by_kappa[k]["ALSP"][0][:2], t)
+                                  / _reach(*curves_by_kappa[k][label][0][:2], t) for t in LOGISTIC_LEVELS]
+                                 for k in kappas]) for label in ("UQ-AGD, fixed schedule", "UQ-AGD, stall rule")}
+    ridge_of = {kappa: ridge for ridge, kappa, *_ in rows}
+    _write_speedup_table(kappas, [ridge_of[k] for k in kappas], speedups["UQ-AGD, stall rule"],
+                         args.out / "logistic_speedup")
+    first = curves_by_kappa[kappas[0]]
+    colors = {"ALSP": SERIES[3], "UQ-AGD, fixed schedule": SERIES[1], "UQ-AGD, stall rule": SERIES[0]}
+
+    def build(paper):
+        fig, axes = plt.subplots(1, 2, figsize=(6.5, 2.7) if paper else (11, 4.4), layout="constrained")
+        lw = 1.2 if paper else 1.8
+        ax = axes[0]
+        for label, (l2, _) in first.items():
+            x, y, lo, hi = l2
+            ax.fill_between(x, lo, hi, color=colors[label], alpha=0.15, lw=0)
+            ax.plot(x, y, lw=lw, color=colors[label], label=label, ls="-." if label == "ALSP" else "-")
+        ax.set(xscale="log", yscale="log", xlabel=r"Gradient evaluations of $F$",
+               ylabel=r"$\|u - u^*\|_2^2 / \|u^*\|_2^2$")
+        ax.set_title(rf"(a) Dong et al.'s setting, $\kappa \approx {kappas[0]:.0f}$", loc="left",
+                     fontsize=9 if paper else 11)
+        ax.legend(frameon=False)
+        ax = axes[1]
+        for (label, sp), marker in zip(speedups.items(), ("o", "s")):
+            for j, t in enumerate(LOGISTIC_LEVELS[1:], start=1):
+                ax.plot(kappas, sp[:, j], marker=marker, ms=4, lw=lw, color=colors[label],
+                        ls="-" if j == 1 else "--", label=f"{label}, {t:.0e}")
+        ax.plot(kappas, np.sqrt(kappas) / 2, color="0.45", ls=":", lw=lw, label=r"$\sqrt{\kappa}/2$")
+        ax.axhline(1, color="0.7", lw=0.6)
+        ax.set(xscale="log", yscale="log", xlabel=r"$\kappa$", ylabel="Speedup over tuned ALSP")
+        ax.set_xticks(kappas, [f"{k:.0f}" for k in kappas])
+        ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax.set_yticks([1, 2, 4, 8, 16], ["1", "2", "4", "8", "16"])
+        ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax.set_title("(b) Speedup against conditioning", loc="left", fontsize=9 if paper else 11)
+        ax.legend(frameon=False, fontsize=6 if paper else 8)
+        for a in axes:
+            _style_axes(a)
+        return fig
+
+    data = {f"kappa {k:.0f} {label}": l2 for k in kappas for label, (l2, _) in curves_by_kappa[k].items()}
+    data.update({f"speedup {label}": sp for label, sp in speedups.items()})
+    data["kappas"] = kappas
+    _save(build, args.out / "logistic_kappa", args.paper, data)
+
+
+def _write_speedup_table(kappas, ridges, speedup, path):
+    """Speedup of UQ-AGD (stall rule) over tuned ALSP at each relative error (paper Table 2)."""
+    rho = lambda r: "1/" + f"{1 / r:g}"  # noqa: E731
+    lines = ["| rho | kappa | sqrt(kappa)/2 | " + " | ".join(f"{t:.0e}" for t in LOGISTIC_LEVELS) + " |",
+             "|---|---|---|" + "---|" * len(LOGISTIC_LEVELS)]
+    tex = [r"\begin{tabular}{ccc" + "c" * len(LOGISTIC_LEVELS) + "}", r"\toprule",
+           r"$\rho$ & $\kappa$ & $\sqrt{\kappa}/2$ & "
+           + " & ".join(rf"$10^{{{int(np.log10(t))}}}$" for t in LOGISTIC_LEVELS) + r" \\", r"\midrule"]
+    for kappa, ridge, row in zip(kappas, ridges, speedup):
+        cells = [f"{s:.1f}" for s in row]
+        lines.append(f"| {rho(ridge)} | {kappa:.0f} | {np.sqrt(kappa) / 2:.1f} | " + " | ".join(cells) + " |")
+        tex.append(f"${rho(ridge)}$ & {kappa:.0f} & {np.sqrt(kappa) / 2:.1f} & " + " & ".join(cells) + r" \\")
+    tex += [r"\bottomrule", r"\end{tabular}"]
+    path.with_suffix(".md").write_text("\n".join(lines) + "\n")
+    path.with_suffix(".tex").write_text("\n".join(tex) + "\n")
+    print(f"  saved {path.with_suffix('.md')} and .tex")
+
+
+def logistic_alsp_tune(args):
+    """Tune ALSP's check interval at one ridge value after the fact (reduced protocol).
+
+    Runs ALSP with the intervals in --alsp-checks, using the same trials, seed and step budget
+    as the saved run, and adopts the best interval (fewest evaluations to 1e-5, ties at 1e-7)
+    among these and the saved one. The UQ-AGD runs do not depend on ALSP and are kept.
+    """
+    global LOGISTIC_ALSP_BUDGET
+    for ridge in args.ridges:
+        path = args.out / f"logistic_ridge_{ridge:g}.pkl"
+        with open(path, "rb") as fh:
+            saved = pickle.load(fh)
+        LOGISTIC_ALSP_BUDGET = saved.get("alsp_budget", LOGISTIC_ALSP_BUDGET)
+        problem, basis, ref, norm2, tail, m_max, metric = _logistic_setup(ridge)
+        common = dict(reference=ref, n_trials=saved["trials"], metric=metric)
+        candidates = {saved["alsp_check"]: saved["final"]["ALSP"]}
+        print(f"  ridge {ridge:g} (kappa {problem.kappa:.0f}): saved ALSP checks every {saved['alsp_check']}")
+        for check in args.alsp_checks:
+            out = {}
+            _logistic_alsp(out, problem, basis, ref, norm2, tail, m_max, common, args.seed + 100, check)
+            candidates[check] = out["ALSP"]
+        score = {c: tuple(np.nan_to_num([_reach(*curve[0][:2], t) for t in LOGISTIC_LEVELS[1:]], nan=np.inf))
+                 for c, curve in candidates.items()}
+        for c in sorted(score):
+            print(f"    check every {c}: evaluations to 1e-5, 1e-7 = {score[c][0]:.2e}, {score[c][1]:.2e}")
+        best = min(score, key=score.get)
+        print(f"    selected: check every {best}")
+        saved.update(alsp_check=best, alsp_tuned_over=sorted(candidates))
+        saved["final"]["ALSP"] = candidates[best]
+        with open(path, "wb") as fh:
+            pickle.dump(saved, fh)
+    _logistic_summary(args)
 
 
 FIGURES = {
@@ -896,13 +1166,14 @@ FIGURES = {
     "markowitz": markowitz, "lemma31": lemma31, "markowitz_uq": markowitz_uq, "cost": cost,
     "comparison": comparison, "comparison_adaptive": comparison_adaptive, "schedules": schedules,
     "ablation_batch1": ablation_batch1, "ablation_increment": ablation_increment, "alsp_sweep": alsp_sweep,
-    "revalidate": revalidate, "sweep_extended": sweep_extended, "revalidate_extended": revalidate_extended,
+    "revalidate": revalidate, "logistic_kappa": logistic_kappa,
+    "logistic_alsp_tune": logistic_alsp_tune, "sweep_extended": sweep_extended, "revalidate_extended": revalidate_extended,
 }
 
 
-def main(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("figures", nargs="*", default=["all"], choices=[*FIGURES, "all", "section6"])
+    parser.add_argument("figures", nargs="*", metavar="experiment", help=f"default: all. One of: {', '.join(FIGURES)}")
     parser.add_argument("--trials", type=int, default=200, help="Monte Carlo repetitions averaged per curve")
     parser.add_argument("--mu", type=float, default=1.0)
     parser.add_argument("--L", type=float, default=200.0)
@@ -911,16 +1182,28 @@ def main(argv=None):
     parser.add_argument("--cost-trials", type=int, default=5,
                         help="trials for the gradient-evaluation comparisons (comparison and ablations)")
     parser.add_argument("--sweep-trials", type=int, default=5, help="trials per setting in alsp_sweep")
+    parser.add_argument("--ridges", type=float, nargs="*", default=None,
+                        help="ridge values for logistic_kappa (default: LOGISTIC_RIDGES)")
+    parser.add_argument("--logistic-settings", type=int, nargs=2, default=None, metavar=("ALSP_CHECK", "WINDOW"),
+                        help="logistic_kappa: skip the sweep and use these settings (reduced protocol)")
+    parser.add_argument("--alsp-checks", type=int, nargs="*", default=[16000, 64000],
+                        help="logistic_alsp_tune: ALSP check intervals to try")
+    parser.add_argument("--alsp-budget", type=float, default=None,
+                        help="logistic_kappa: ALSP steps as a multiple of Q_{m_max} * kappa (default 25)")
     parser.add_argument("--paper", action="store_true", help="also write half-width Computer Modern PDFs for LaTeX")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=Path("results"))
-    args = parser.parse_args(argv)
+    return parser
 
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    unknown = set(args.figures) - {*FIGURES, "all"}
+    if unknown:
+        parser.error(f"unknown experiment(s): {', '.join(sorted(unknown))}")
     args.out.mkdir(parents=True, exist_ok=True)
-    if "section6" in args.figures:
-        section6(args)
-        return
-    names = list(FIGURES) if "all" in args.figures else args.figures
+    names = list(FIGURES) if not args.figures or "all" in args.figures else args.figures
     for name in names:
         print(f"{name}:")
         FIGURES[name](args)

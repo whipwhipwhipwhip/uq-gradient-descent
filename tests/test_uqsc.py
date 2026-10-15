@@ -113,3 +113,32 @@ def test_adaptive_uq_descent_grows_and_converges():
         assert res.errors[0, -1] < res.errors[0, 0]
     with pytest.raises(ValueError):
         adaptive_uq_descent(p, b, est, 1, 6, 10)
+
+
+def _synthetic_logistic(ridge=0.25, sample_rows=False):
+    from uqsc.problems import WeightedLogisticProblem
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 4))
+    y = (rng.uniform(size=60) < 0.3).astype(float)
+    return WeightedLogisticProblem(ridge=ridge, sample_rows=sample_rows, data=(X, y))
+
+
+def test_weighted_logistic_gradient_optimum_and_constants():
+    p = _synthetic_logistic()
+    theta = np.linspace(-1, 1, 7)
+    x = np.random.default_rng(1).normal(size=(p.q, 7))
+    h, e = 1e-6, np.eye(p.q)[:, :, None]
+    fd = np.stack([(p.value(x + h * e[i], theta) - p.value(x - h * e[i], theta)) / (2 * h) for i in range(p.q)])
+    np.testing.assert_allclose(p.mean_grad(x, theta), fd, atol=1e-6)
+    np.testing.assert_allclose(p.mean_grad(p.optimum(theta), theta), 0, atol=1e-12)
+    np.testing.assert_allclose(p.mean_grad(x, theta, chunk=60), p.mean_grad(x, theta))  # chunked path
+    assert p.mu == 0.25 and p.L > p.mu
+
+
+def test_weighted_logistic_row_sampling_is_unbiased():
+    p = _synthetic_logistic(sample_rows=True)
+    theta = np.full(200_000, 0.3)
+    x = np.tile(np.random.default_rng(2).normal(size=(p.q, 1)), (1, theta.size))
+    g = p.grad(x, theta, p.sample_v(np.random.default_rng(3), theta.shape))
+    np.testing.assert_allclose(g.mean(axis=1), p.mean_grad(x[:, :1], theta[:1])[:, 0], atol=0.02)

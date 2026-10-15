@@ -40,6 +40,7 @@ def adaptive_learn_solution_path(
     n_quad: int = 2**12,
     seed: int | None = None,
     record_at: np.ndarray | None = None,
+    metric=None,
 ) -> Result:
     """ALSP with SGD as the inner solver.
 
@@ -56,7 +57,7 @@ def adaptive_learn_solution_path(
     B = basis.evaluate(nodes, m_max)
     u = np.zeros((n_trials, problem.q, m_max))
     levels = np.empty(n_iter, dtype=int)
-    record = _Recorder(n_iter, n_trials, reference, record_at)
+    record = _Recorder(n_iter, n_trials, reference, record_at, metric)
     m, last = m_start, np.inf
 
     for k in range(1, n_iter + 1):
@@ -71,7 +72,8 @@ def adaptive_learn_solution_path(
                 obj = np.inf
             last = obj
 
-    return Result(u=u[:, :, :m], levels=levels, errors=record.errors, iterations=record.iterations)
+    return Result(u=u[:, :, :m], levels=levels, errors=record.errors, iterations=record.iterations,
+                  extra=record.extra)
 
 
 def naive_monte_carlo(

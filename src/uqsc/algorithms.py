@@ -30,6 +30,8 @@ class Result:
     """||u^{k+1} - P_{m_k}(u*)||_2^2 per trial at the recorded iterations, if a reference was given."""
     iterations: np.ndarray | None = None
     """Iterations k (1-based) at which ``errors`` were recorded; None means every iteration."""
+    extra: np.ndarray | None = None
+    """Values of the optional ``metric(u, m)`` at the recorded iterations, shape (T, n_recorded)."""
 
     @property
     def mean_error(self) -> np.ndarray:
@@ -48,24 +50,32 @@ class _Recorder:
     of millions of SGD steps.
     """
 
-    def __init__(self, n_iter, n_trials, reference, record_at=None):
-        self.reference = reference
+    def __init__(self, n_iter, n_trials, reference, record_at=None, metric=None):
+        self.reference, self.metric = reference, metric
+        self.extra = None
         if reference is None:
             self.iterations, self.errors = None, None
             return
         self.iterations = None if record_at is None else np.unique(np.clip(np.asarray(record_at), 1, n_iter))
         n_rec = n_iter if self.iterations is None else len(self.iterations)
         self.errors = np.full((n_trials, n_rec), np.nan)
+        if metric is not None:
+            self.extra = np.full((n_trials, n_rec), np.nan)
         self._next = 0
 
     def __call__(self, k, u, m):
         if self.reference is None:
             return
         if self.iterations is None:
-            self.errors[:, k - 1] = _error(u, self.reference, m)
+            col = k - 1
         elif self._next < len(self.iterations) and self.iterations[self._next] == k:
-            self.errors[:, self._next] = _error(u, self.reference, m)
+            col = self._next
             self._next += 1
+        else:
+            return
+        self.errors[:, col] = _error(u, self.reference, m)
+        if self.metric is not None:
+            self.extra[:, col] = self.metric(u, m)
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +164,7 @@ def uq_gradient_descent(
     reference: np.ndarray | None = None,
     seed: int | None = None,
     record_at: np.ndarray | None = None,
+    metric=None,
 ) -> Result:
     """Algorithm 3.1.
 
@@ -167,14 +178,15 @@ def uq_gradient_descent(
     rng = np.random.default_rng(seed)
     step_size = _as_step(step_size)
     levels, u = _setup(m_schedule, n_iter, q, n_trials, u1)
-    record = _Recorder(n_iter, n_trials, reference, record_at)
+    record = _Recorder(n_iter, n_trials, reference, record_at, metric)
 
     for k, m in enumerate(levels, start=1):
         g = estimator.estimate(u[:, :, :m], m, k, rng)
         u[:, :, :m] -= step_size(k, m) * g
         record(k, u, m)
 
-    return Result(u=u[:, :, : levels[-1]], levels=levels, errors=record.errors, iterations=record.iterations)
+    return Result(u=u[:, :, : levels[-1]], levels=levels, errors=record.errors, iterations=record.iterations,
+                  extra=record.extra)
 
 
 def uq_accelerated_gradient_descent(
@@ -188,6 +200,8 @@ def uq_accelerated_gradient_descent(
     n_trials: int = 1,
     reference: np.ndarray | None = None,
     seed: int | None = None,
+    record_at: np.ndarray | None = None,
+    metric=None,
 ) -> Result:
     """Algorithm 5.1.
 
@@ -198,7 +212,7 @@ def uq_accelerated_gradient_descent(
     alpha, beta = _as_step(alpha), _as_step(beta)
     levels, u = _setup(m_schedule, n_iter, q, n_trials, u1)
     u_prev = u.copy()
-    errors = np.empty((n_trials, n_iter)) if reference is not None else None
+    record = _Recorder(n_iter, n_trials, reference, record_at, metric)
 
     for k, m in enumerate(levels, start=1):
         b = beta(k, m)
@@ -206,10 +220,10 @@ def uq_accelerated_gradient_descent(
         g = estimator.estimate(y, m, k, rng)
         u_prev[:, :, :m] = u[:, :, :m]
         u[:, :, :m] = y - alpha(k, m) * g
-        if errors is not None:
-            errors[:, k - 1] = _error(u, reference, m)
+        record(k, u, m)
 
-    return Result(u=u[:, :, : levels[-1]], levels=levels, errors=errors)
+    return Result(u=u[:, :, : levels[-1]], levels=levels, errors=record.errors, iterations=record.iterations,
+                  extra=record.extra)
 
 
 def stochastic_approximation(estimator, m_schedule, n_iter, q, gamma0=1e-2, **kwargs) -> Result:
@@ -235,6 +249,7 @@ def adaptive_uq_descent(
     n_quad: int = 2**12,
     seed: int | None = None,
     record_at: np.ndarray | None = None,
+    metric=None,
 ) -> Result:
     """Algorithm 3.1 (``step_size``) or Algorithm 5.1 (``alpha``, ``beta``) with the stall rule of ALSP.
 
@@ -261,7 +276,7 @@ def adaptive_uq_descent(
     u = np.zeros((n_trials, problem.q, m_max))
     u_prev = u.copy()
     levels = np.empty(n_iter, dtype=int)
-    record = _Recorder(n_iter, n_trials, reference, record_at)
+    record = _Recorder(n_iter, n_trials, reference, record_at, metric)
     m, last = m_start, np.inf
 
     for k in range(1, n_iter + 1):
@@ -286,4 +301,5 @@ def adaptive_uq_descent(
                 obj = np.inf
             last = obj
 
-    return Result(u=u[:, :, :m], levels=levels, errors=record.errors, iterations=record.iterations)
+    return Result(u=u[:, :, :m], levels=levels, errors=record.errors, iterations=record.iterations,
+                  extra=record.extra)
