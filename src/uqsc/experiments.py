@@ -181,7 +181,7 @@ def fig2(args):
         est, schedule, K, gd_step_size(problem, basis, est),
         q=problem.q, reference=ref, n_trials=args.trials, seed=args.seed,
     )
-    _plot({"GD": gd.mean_error}, f"Fig. 2: GD with uncertainty in v ({args.trials} trials)", args.out / "fig2", COLORS, paper=args.paper)
+    _plot({"GD": gd.mean_error}, f"GD with uncertainty in v ({args.trials} trials)", args.out / "fig2", COLORS, paper=args.paper)
 
 
 def fig3(args):
@@ -205,7 +205,7 @@ def fig3(args):
         print(f"  {label}: {(time.perf_counter() - t0):.2f}s for {args.trials} trials")
         curves[label] = res.mean_error
     colors = {"Full UQ method": COLORS["GD"], "Fixed amount of basis functions": COLORS["AGD"]}
-    _plot(curves, f"Fig. 3: fixed vs growing basis ({args.trials} trials)", args.out / "fig3", colors, paper=args.paper)
+    _plot(curves, f"Fixed vs growing basis ({args.trials} trials)", args.out / "fig3", colors, paper=args.paper)
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ def markowitz(args):
     """UQ-GD and UQ-AGD on Example 1.1 with noisy returns and a growing 2-D Legendre basis."""
     problem, basis, ref, _ = _markowitz(MK_NOISE)
     est = MonteCarloGradient(problem, basis, n_samples=_proportional_samples(basis))
-    n_trials, K = max(5, args.trials // 10), 200
+    n_trials, K = args.trials, 200
     common = dict(q=problem.q, reference=ref, n_trials=n_trials)
     print(f"  kappa = {problem.kappa:.1f}, V = {problem.V:.2e}, {n_trials} trials")
 

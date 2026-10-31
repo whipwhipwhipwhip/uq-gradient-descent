@@ -49,18 +49,18 @@ ITEMS = {
     "fig2": Item("Fig. 2: fixed vs. growing basis, m_k = floor((k+10)^0.7) + 2, 200 trials",
                  ex.fig3, {"fig2.pdf": "fig3.pdf"}, dict(trials=200, power=0.7)),
     "fig3": Item("Fig. 3: Markowitz, UQ-GD and UQ-AGD with noisy returns, 20 trials",
-                 ex.markowitz, {"fig3.pdf": "markowitz.pdf"}, dict(trials=200)),
+                 ex.markowitz, {"fig3.pdf": "markowitz.pdf"}, dict(trials=20)),
     "fig4": Item("Fig. 4 and Table 1: learned vs. true distribution of the optimal weights",
                  ex.markowitz_uq, {"fig4.pdf": "markowitz_uq.pdf", "table1.tex": "markowitz_uq_table.tex",
                                    "table1.md": "markowitz_uq_table.md"}),
-    "fig5": Item("Fig. 5: comparison with LSP, ALSP and naive MC (Markowitz, V = 0), 5 trials",
-                 ex.comparison, {"fig5.pdf": "comparison.pdf"}, dict(cost_trials=5)),
+    "fig5": Item("Fig. 5: comparison with LSP, ALSP and naive MC (Markowitz, V = 0), 20 trials",
+                 ex.comparison, {"fig5.pdf": "comparison.pdf"}, dict(cost_trials=20)),
     "fig6": Item("Fig. 6 and Table 2: weighted logistic regression, speedup over ALSP against kappa",
                  _logistic, {"fig6.pdf": "logistic_kappa.pdf", "table2.tex": "logistic_speedup.tex",
                              "table2.md": "logistic_speedup.md"}, dict(sweep_trials=5)),
-    "table3": Item("Table 3: gradient evaluations for three basis growth rates (Markowitz, V = 0), 5 trials",
+    "table3": Item("Table 3: gradient evaluations for three basis growth rates (Markowitz, V = 0), 20 trials",
                    ex.schedules, {"table3.tex": "schedules_table.tex", "table3.md": "schedules_table.md"},
-                   dict(cost_trials=5)),
+                   dict(cost_trials=20)),
 }
 ALIASES = {"table1": "fig4", "table2": "fig6"}
 

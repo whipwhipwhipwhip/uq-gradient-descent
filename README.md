@@ -33,9 +33,9 @@ and intermediate files go to `results/paper/raw/`, under the experiment names us
 | `fig2` | `fig2.pdf` | `fig3` | m_k = ⌊(k+10)^0.7⌋ + 2 vs. fixed m = 91, M=250, 600 iterations, 200 trials |
 | `fig3` | `fig3.pdf` | `markowitz` | Portfolio problem with noisy returns, M_k = 2Q_{m_k}, 20 trials |
 | `fig4` (= `table1`) | `fig4.pdf`, `table1.tex` | `markowitz_uq` | One UQ-AGD run (600 iterations) against 20 000 Monte Carlo samples of θ |
-| `fig5` | `fig5.pdf` | `comparison` | UQ-GD, UQ-AGD, LSP (m = 10/28/66), ALSP, naive MC; V = 0, 5 trials |
+| `fig5` | `fig5.pdf` | `comparison` | UQ-GD, UQ-AGD, LSP (m = 10/28/66), ALSP, naive MC; V = 0, 20 trials |
 | `fig6` (= `table2`) | `fig6.pdf`, `table2.tex` | `logistic_kappa`, `logistic_alsp_tune` | See below |
-| `table3` | `table3.tex` | `schedules` | One total degree every 25/75/200 iterations; V = 0, 5 trials |
+| `table3` | `table3.tex` | `schedules` | One total degree every 25/75/200 iterations; V = 0, 20 trials |
 
 Every table is also written as `.md`. All runs use seed 0. `fig1`–`fig4` take about a
 minute together. `fig5` and `table3` take tens of minutes, and `fig6` is by far the longest.
@@ -49,7 +49,19 @@ published by Dong et al., downloaded on first use from their repository at a pin
 and cached in `~/.cache/uqsc` (override with `UQSC_CACHE`).
 
 Names in `uqsc-experiments` predate the revision, and the experiment `fig3` produces the
-paper's Fig. 2.
+paper's Fig. 2. The two naming schemes overlap: `results/paper/fig3.pdf` is the paper's
+Fig. 3 (the portfolio problem), while `results/paper/raw/fig3.pdf` is the paper's Fig. 2.
+
+## Data
+
+The logistic regression of Fig. 6 and Table 2 uses the 1000-row subsample of the LSAC
+National Longitudinal Bar Passage Study (L. F. Wightman, LSAC Research Report Series, Law
+School Admission Council, 1998), as processed by Q. Dong, P. Grigas and V. Gupta for
+*Beyond Discretization: Learning the Optimal Solution Path* (AISTATS 2025). The files are
+downloaded from their repository,
+[Cumberkid/Learning-the-Optimal-Solution-Path](https://github.com/Cumberkid/Learning-the-Optimal-Solution-Path)
+(MIT License, Copyright (c) 2018 paulgrigas), at commit `cf499df`, and are not
+redistributed here. LSP and ALSP in `baselines.py` are our implementations of their methods.
 
 ## Other experiments
 
@@ -115,3 +127,8 @@ var = (u[:, 1:] ** 2).sum(axis=1)    # variance is the sum of the remaining squa
 - `algorithms.py`: both algorithms, the SA baseline, the step-size rules and the
   schedules. Step sizes may be constants or callables `(k, m) -> float`. All runs are
   vectorised over `n_trials` independent trials.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The data used by Fig. 6 are covered by the license of their
+source repository (see [Data](#data)).
