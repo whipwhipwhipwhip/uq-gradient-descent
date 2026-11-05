@@ -29,28 +29,39 @@ and intermediate files go to `results/paper/raw/`, under the experiment names us
 
 | Item | Writes | Experiment | Settings |
 |---|---|---|---|
-| `fig1` | `fig1a.pdf`, `fig1b.pdf` | `fig1a`, `fig1b` | Quadratic (6.2)/(6.3), µ=1, L=200, m_k = ⌊√(k+10)⌋ + 2, M=500, 200 trials |
-| `fig2` | `fig2.pdf` | `fig3` | m_k = ⌊(k+10)^0.7⌋ + 2 vs. fixed m = 91, M=250, 600 iterations, 200 trials |
+| `fig1` | `fig1a.pdf`, `fig1b.pdf` | `quadratic_exact`, `quadratic_mc` | Quadratic (6.2)/(6.3), µ=1, L=200, m_k = ⌊√(k+10)⌋ + 2, M=500, 200 trials |
+| `fig2` | `fig2.pdf` | `fixed_vs_growing` | m_k = ⌊(k+10)^0.7⌋ + 2 vs. fixed m = 91, M=250, 600 iterations, 200 trials |
 | `fig3` | `fig3.pdf` | `markowitz` | Portfolio problem with noisy returns, M_k = 2Q_{m_k}, 20 trials |
 | `fig4` (= `table1`) | `fig4.pdf`, `table1.tex` | `markowitz_uq` | One UQ-AGD run (600 iterations) against 20 000 Monte Carlo samples of θ |
 | `fig5` | `fig5.pdf` | `comparison` | UQ-GD, UQ-AGD, LSP (m = 10/28/66), ALSP, naive MC; V = 0, 20 trials |
 | `fig6` (= `table2`) | `fig6.pdf`, `table2.tex` | `logistic_kappa`, `logistic_alsp_tune` | See below |
 | `table3` | `table3.tex` | `schedules` | One total degree every 25/75/200 iterations; V = 0, 20 trials |
 
-Every table is also written as `.md`. All runs use seed 0. `fig1`–`fig4` take about a
-minute together. `fig5` and `table3` take tens of minutes, and `fig6` is by far the longest.
+Every table is also written as `.md`. All runs use seed 0, and with the package versions
+pinned in `uv.lock` they reproduce the paper's figures and tables exactly. Other versions of
+NumPy or its linear algebra backend may change the results in the last digits.
+
+Runtimes of `uv run uqsc-paper` on an Apple M4 Max (14-core CPU) with 36 GB of
+RAM.
+
+| Item | Runtime |
+|---|---|
+| `fig1` | 14 s |
+| `fig2` | 31 s |
+| `fig3` | 2 s |
+| `fig4` | 1 s |
+| `fig5` | 13 min |
+| `fig6` (= `table2`) | 2 h 25 min |
+| `table3` | 7 min |
+| All | 2 h 45 min |
 
 **Fig. 6 / Table 2 protocol** (Section 6.3.1). At κ ≈ 16, 60 and 236, ALSP's check
 interval (250/1000/4000) and the stall window of UQ-AGD (2/5) are tuned on 5 trials each,
 and the selected settings are rerun with 20 trials. At κ ≈ 940 the settings from κ ≈ 236
 are reused, with 5 trials and an ALSP budget of 6 Q_{m_max} κ steps. ALSP alone is then
-re-tuned over check intervals 4000, 16000 and 64000. The data are the LSAC subsample
-published by Dong et al., downloaded on first use from their repository at a pinned commit
-and cached in `~/.cache/uqsc` (override with `UQSC_CACHE`).
-
-Names in `uqsc-experiments` predate the revision, and the experiment `fig3` produces the
-paper's Fig. 2. The two naming schemes overlap: `results/paper/fig3.pdf` is the paper's
-Fig. 3 (the portfolio problem), while `results/paper/raw/fig3.pdf` is the paper's Fig. 2.
+re-tuned over the carried-over check interval (4000), 16000 and 64000. The data are the
+LSAC subsample published by Dong et al., downloaded on first use from their repository at
+a pinned commit and cached in `~/.cache/uqsc` (override with `UQSC_CACHE`).
 
 ## Data
 
@@ -81,15 +92,14 @@ Outputs go to `results/` (`--out` to change). `--paper` also writes `.pdf` versi
 | `ablation_batch1` | Accelerated SGD at batch size 1 diverges: acceleration needs M_k to grow with Q_m |
 | `ablation_increment` | The stall rule adding one function vs. a whole total degree per step, for ALSP and both UQ methods |
 | `schedules` | The curves behind Table 3, as a two-panel figure |
-| `fig2` | The original Fig. 2: GD on the noisy quadratic (6.3) alone (now a line in Fig. 1b) |
-| `cost` | An earlier version of the Fig. 5 comparison, capped at m = 28 |
 
 **Tuning ALSP.** `alsp_sweep` and `sweep_extended` sweep the stall-rule settings of ALSP
 and of the adaptive UQ methods on the portfolio problem, and write tables of the gradient
-evaluations each setting needs (`alsp_sweep.md`, `sweep_extended.md`). The selected
-settings are recorded in `ALSP_CHECK_EVERY`, `ALSP_TOL` and `STALL` in `experiments.py`,
-and Fig. 5 uses them. `revalidate` and `revalidate_extended` run a sweep, adopt its
-selection and rerun the affected comparison figures.
+evaluations each setting needs (`alsp_sweep.md`, `sweep_extended.md`), marking the setting
+selected by the rule fixed in advance (fewest evaluations to 1e-6, ties at 1e-8). The
+selected settings are recorded in `ALSP_CHECK_EVERY`, `ALSP_TOL` and `STALL` in
+`experiments.py`, which Fig. 5 and the ablations use. To change them, edit those constants
+and rerun the figures.
 
 ## Library
 
@@ -114,8 +124,8 @@ var = (u[:, 1:] ** 2).sum(axis=1)    # variance is the sum of the remaining squa
   `TensorLegendreBasis` (U[−1,1]^d, ordered by total degree). Each provides sampling,
   quadrature and Q_m.
 - `problems.py`: the `Problem` interface (`mean_grad`, `grad`, `sample_v`) and the
-  quadratics (6.2) and (6.3), and `MarkowitzProblem` (Example 1.1). Subclass `Problem`
-  to add new objectives.
+  quadratics (6.2) and (6.3), `MarkowitzProblem` (Example 1.1) and
+  `WeightedLogisticProblem` (6.6). Subclass `Problem` to add new objectives.
 - `gradients.py`: `ExactGradient` (quadrature) and `MonteCarloGradient`, i.e.
   Equation (3.5), with M_k samples of θ and `n_inner` = P samples of v. M_k may be a
   schedule `(k, m) -> int`.
@@ -124,8 +134,8 @@ var = (u[:, 1:] ** 2).sum(axis=1)    # variance is the sum of the remaining squa
   experiment and its settings.
 - `experiments.py`: every experiment, and the `uqsc-experiments` command.
 - `data.py`: downloads and caches the logistic regression data of Dong et al.
-- `algorithms.py`: both algorithms, the SA baseline, the step-size rules and the
-  schedules. Step sizes may be constants or callables `(k, m) -> float`. All runs are
+- `algorithms.py`: both algorithms, their stall-rule variant `adaptive_uq_descent`, the SA
+  baseline, the step-size rules and the schedules. Step sizes may be constants or callables `(k, m) -> float`. All runs are
   vectorised over `n_trials` independent trials.
 
 ## License

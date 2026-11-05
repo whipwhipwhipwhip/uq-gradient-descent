@@ -13,6 +13,7 @@ table's number in the paper (fig1a.pdf, table1.tex, ...).
 from __future__ import annotations
 
 import argparse
+import pickle
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -33,10 +34,13 @@ def _logistic(args):
     """Fig. 6 / Table 2. kappa ~ 16, 60, 236: full protocol (tune ALSP and the stall window with
     --sweep-trials, rerun with 20 trials). kappa ~ 940: reduced protocol, as described in Section 6.3.1:
     settings carried over from kappa ~ 236, 5 trials, an ALSP budget of 6 Q_{m_max} kappa steps, then
-    ALSP alone re-tuned over check intervals 4000 (carried over), 16000 and 64000."""
+    ALSP alone re-tuned over the carried-over check interval (4000 in the paper), 16000 and 64000."""
     args.ridges, args.cost_trials = [0.25, 1 / 16, 1 / 64], 20
     ex.logistic_kappa(args)
-    args.ridges, args.cost_trials, args.logistic_settings, args.alsp_budget = [1 / 256], 5, (4000, 5), 6.0
+    with open(args.out / f"logistic_ridge_{1 / 64:g}.pkl", "rb") as fh:
+        selected = pickle.load(fh)  # settings tuned at kappa ~ 236
+    args.logistic_settings = (selected["alsp_check"], selected["window"])
+    args.ridges, args.cost_trials, args.alsp_budget = [1 / 256], 5, 6.0
     ex.logistic_kappa(args)
     args.alsp_checks = [16000, 64000]
     ex.logistic_alsp_tune(args)
@@ -44,10 +48,10 @@ def _logistic(args):
 
 ITEMS = {
     "fig1": Item("Fig. 1: quadratic (6.2), exact (a) and Monte Carlo (b) gradients, 200 trials",
-                 lambda a: (ex.fig1a(a), ex.fig1b(a)),
-                 {"fig1a.pdf": "fig1a.pdf", "fig1b.pdf": "fig1b.pdf"}, dict(trials=200)),
+                 lambda a: (ex.quadratic_exact(a), ex.quadratic_mc(a)),
+                 {"fig1a.pdf": "quadratic_exact.pdf", "fig1b.pdf": "quadratic_mc.pdf"}, dict(trials=200)),
     "fig2": Item("Fig. 2: fixed vs. growing basis, m_k = floor((k+10)^0.7) + 2, 200 trials",
-                 ex.fig3, {"fig2.pdf": "fig3.pdf"}, dict(trials=200, power=0.7)),
+                 ex.fixed_vs_growing, {"fig2.pdf": "fixed_vs_growing.pdf"}, dict(trials=200, power=0.7)),
     "fig3": Item("Fig. 3: Markowitz, UQ-GD and UQ-AGD with noisy returns, 20 trials",
                  ex.markowitz, {"fig3.pdf": "markowitz.pdf"}, dict(trials=20)),
     "fig4": Item("Fig. 4 and Table 1: learned vs. true distribution of the optimal weights",

@@ -1,11 +1,11 @@
 """Every experiment, including those not in the paper.
 
-    uqsc-experiments fig1a fig3 --trials 50 --out results
+    uqsc-experiments quadratic_exact fixed_vs_growing --trials 50 --out results
     uqsc-experiments ablation_batch1 --cost-trials 20 --paper
 
 To reproduce exactly the figures and tables of the paper, use ``uqsc-paper`` (paper.py),
 which runs the experiments below with the paper's settings and names the outputs by their
-number in the paper. Experiment names here are historical: ``fig3`` is the paper's Fig. 2.
+number in the paper.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def _plot(curves: dict, title: str, path: Path, colors=None, paper=False, paper_
     _save(build, path, paper, curves)
 
 
-def fig1a(args):
+def quadratic_exact(args):
     """Exact gradients: GD with gamma = 2/(mu+L); AGD with alpha = 1/L."""
     problem, basis = QuadraticProblem(mu=args.mu, L=args.L), TrigBasis()
     schedule, K = sqrt_schedule(), 300
@@ -144,10 +144,11 @@ def fig1a(args):
     gd = uq_gradient_descent(est, schedule, K, 2 / (problem.mu + problem.L), **common)
     alpha, beta = agd_parameters(problem.mu, 1 / problem.L)
     agd = uq_accelerated_gradient_descent(est, schedule, K, alpha, beta, **common)
-    _plot({"GD": gd.mean_error, "AGD": agd.mean_error}, "Fig. 1a: exact gradients", args.out / "fig1a", COLORS, paper=args.paper)
+    _plot({"GD": gd.mean_error, "AGD": agd.mean_error}, "Exact gradients", args.out / "quadratic_exact", COLORS,
+          paper=args.paper)
 
 
-def fig1b(args):
+def quadratic_mc(args):
     """Monte Carlo gradients (M = 500): GD at the maximal step of Theorem 4.3, AGD, and SA."""
     problem, basis = QuadraticProblem(mu=args.mu, L=args.L), TrigBasis()
     schedule, K = sqrt_schedule(), 300
@@ -166,25 +167,11 @@ def fig1b(args):
     curves = {"GD": gd.mean_error, "AGD": agd.mean_error, "SA": sa.mean_error, "GD, noise in $v$": gd_v.mean_error}
     colors = {**COLORS, "SA": COLORS["SGD"], "GD, noise in $v$": COLORS["GD"]}
     styles = {"GD, noise in $v$": dict(ls="--")}
-    _plot(curves, f"Fig. 1b: Monte Carlo gradients (M=500, {args.trials} trials)", args.out / "fig1b", colors,
+    _plot(curves, f"Monte Carlo gradients (M=500, {args.trials} trials)", args.out / "quadratic_mc", colors,
           paper=args.paper, styles=styles)
 
 
-def fig2(args):
-    """Noisy objective (6.3) with v ~ U[-1, 1]; GD with the same step sizes as Fig. 1b."""
-    problem, basis = NoisyQuadraticProblem(mu=args.mu, L=args.L), TrigBasis()
-    schedule, K = sqrt_schedule(), 300
-    ref = _reference(problem, basis, schedule(K))
-    est = MonteCarloGradient(problem, basis, n_samples=500)
-
-    gd = uq_gradient_descent(
-        est, schedule, K, gd_step_size(problem, basis, est),
-        q=problem.q, reference=ref, n_trials=args.trials, seed=args.seed,
-    )
-    _plot({"GD": gd.mean_error}, f"GD with uncertainty in v ({args.trials} trials)", args.out / "fig2", COLORS, paper=args.paper)
-
-
-def fig3(args):
+def fixed_vs_growing(args):
     """UQ (growing m_k) versus a fixed, large level, both with M = 250 and maximal GD steps."""
     problem, basis = QuadraticProblem(mu=1.0, L=200.0), TrigBasis()
     schedule, K = power_schedule(args.power), 600
@@ -205,7 +192,8 @@ def fig3(args):
         print(f"  {label}: {(time.perf_counter() - t0):.2f}s for {args.trials} trials")
         curves[label] = res.mean_error
     colors = {"Full UQ method": COLORS["GD"], "Fixed amount of basis functions": COLORS["AGD"]}
-    _plot(curves, f"Fixed vs growing basis ({args.trials} trials)", args.out / "fig3", colors, paper=args.paper)
+    _plot(curves, f"Fixed vs growing basis ({args.trials} trials)", args.out / "fixed_vs_growing", colors,
+          paper=args.paper)
 
 
 # ---------------------------------------------------------------------------
@@ -355,67 +343,6 @@ def _write_uq_table(s_true, s_learned, path):
     path.with_suffix(".md").write_text("\n".join(lines) + "\n")
     path.with_suffix(".tex").write_text("\n".join(tex) + "\n")
     print(f"  saved {path.with_suffix('.md')} and .tex")
-
-
-def _log_subsample(x, y, n=400):
-    idx = np.unique(np.geomspace(1, len(x), n).astype(int)) - 1
-    return x[idx], y[idx]
-
-
-def cost(args):
-    """Full L2_pi error against gradient evaluations: UQ methods vs. Dong et al. vs. naive MC (V = 0)."""
-    problem, basis, ref, tail = _markowitz()
-    m_final = _n_functions(MK_DEGREE)
-    n_trials = max(5, args.trials // 20)
-    common = dict(reference=ref, n_trials=n_trials)
-    curves, t0 = {}, time.perf_counter()
-
-    def full(res):
-        return res.mean_error + np.array([tail(m) for m in res.levels])
-
-    est = MonteCarloGradient(problem, basis, n_samples=_proportional_samples(basis))
-    alpha, beta = agd_parameters(problem.mu, 1 / problem.L)
-    for label, res in [
-        ("UQ-GD", uq_gradient_descent(est, _degree_schedule(), 2000, gd_step_size(problem, basis, est),
-                                      q=problem.q, seed=args.seed, **common)),
-        ("UQ-AGD", uq_accelerated_gradient_descent(est, _degree_schedule(), 800, alpha, beta,
-                                                   q=problem.q, seed=args.seed + 1, **common)),
-    ]:
-        evals = np.cumsum([est.n_samples(k, m) for k, m in enumerate(res.levels, start=1)])
-        curves[label] = (evals.astype(float), full(res))
-    print(f"  UQ methods: {time.perf_counter() - t0:.0f}s")
-
-    n_sgd = 10**6
-    t0 = time.perf_counter()
-    lsp = learn_solution_path(problem, basis, m_final, n_sgd, seed=args.seed + 2, **common)
-    curves[f"LSP (m={m_final})"] = _log_subsample(np.arange(1.0, n_sgd + 1), full(lsp))
-    alsp = adaptive_learn_solution_path(problem, basis, 3, m_final, n_sgd, check_every=5000, tol=1e-3,
-                                        seed=args.seed + 3, **common)
-    curves["ALSP"] = _log_subsample(np.arange(1.0, n_sgd + 1), full(alsp))
-    print(f"  Dong et al. baselines: {time.perf_counter() - t0:.0f}s (ALSP reached m={alsp.levels[-1]})")
-
-    # Naive MC: per-sample GD solved to squared relative accuracy 1e-8, best truncation in hindsight.
-    rho = (problem.kappa - 1) / (problem.kappa + 1)
-    solver_iters = int(np.ceil(np.log(1e-4) / np.log(rho)))
-    levels = [_n_functions(p) for p in range(0, 9)]
-    sizes = np.unique(np.geomspace(30, 30000, 10).astype(int))
-    rng = np.random.default_rng(args.seed + 4)
-    errs = []
-    for N in sizes:
-        trial_errs = []
-        for _ in range(n_trials):
-            u = naive_monte_carlo(problem, basis, levels[-1], int(N), solver_iters, rng)
-            trial_errs.append([np.sum((u[:, :m] - ref[:, :m]) ** 2) + tail(m) for m in levels])
-        errs.append(np.min(np.mean(trial_errs, axis=0)))
-    curves["Naive MC"] = (sizes * float(solver_iters), np.array(errs))
-
-    colors = dict(zip(curves, SERIES))
-    styles = {f"LSP (m={m_final})": dict(ls="--"), "ALSP": dict(ls="-."), "Naive MC": dict(ls=":", marker="o", ms=3)}
-    for label, (x, y) in curves.items():
-        print(f"  {label}: final error {y[-1]:.1e} after {x[-1]:.1e} gradient evaluations")
-    _plot(curves, f"Cost to accuracy (Markowitz, V = 0, {n_trials} trials)", args.out / "cost", colors,
-          paper=args.paper, logx=True, styles=styles, xlabel=r"Gradient evaluations of $F$",
-          ylabel=r"$\|x - x^*\|_\pi^2$")
 
 
 def _record_points(n, k=400):
@@ -780,20 +707,6 @@ def alsp_sweep(args):
     return best_setting
 
 
-def revalidate(args):
-    """Sweep ALSP's settings, adopt the selected one, then rerun the four comparison figures."""
-    global ALSP_CHECK_EVERY, ALSP_TOL
-    t_start = time.perf_counter()
-    print("alsp_sweep:")
-    ALSP_CHECK_EVERY, ALSP_TOL = alsp_sweep(args)
-    print(f"  using ALSP check every {ALSP_CHECK_EVERY}, tol {ALSP_TOL:g} ({time.perf_counter() - t_start:.0f}s so far)")
-    for name in ("comparison", "comparison_adaptive", "ablation_batch1", "ablation_increment"):
-        print(f"{name}:")
-        t0 = time.perf_counter()
-        FIGURES[name](args)
-        print(f"  ({time.perf_counter() - t0:.0f}s; {time.perf_counter() - t_start:.0f}s so far)")
-
-
 def _best(rows):
     """Row with the fewest evaluations to 1e-6, ties broken at 1e-8."""
     return min(rows, key=lambda r: tuple(np.nan_to_num(r[1][1:], nan=np.inf)))
@@ -859,33 +772,6 @@ def sweep_extended(args):
     (args.out / "sweep_extended.md").write_text("\n".join(lines) + "\n")
     print(f"  saved {args.out / 'sweep_extended.md'}")
     return selected
-
-
-def revalidate_extended(args):
-    """Run ``sweep_extended``, adopt the selected settings, and rerun only the figures they affect."""
-    global ALSP_CHECK_EVERY, ALSP_TOL
-    t_start = time.perf_counter()
-    print("sweep_extended:")
-    before = {("ALSP", "one function"): (ALSP_CHECK_EVERY, ALSP_TOL), **STALL}
-    selected = sweep_extended(args)
-    changed = {variant for variant, setting in selected.items() if before.get(variant) != setting}
-    ALSP_CHECK_EVERY, ALSP_TOL = selected["ALSP", "one function"]
-    STALL.update({variant: setting for variant, setting in selected.items() if variant != ("ALSP", "one function")})
-    print(f"  changed: {sorted(changed) or 'none'} ({time.perf_counter() - t_start:.0f}s so far)")
-    uses = {
-        "comparison": {("ALSP", "one function")},
-        "comparison_adaptive": {("ALSP", "one function"), ("UQ-GD", "one function"), ("UQ-AGD", "one function")},
-        "ablation_batch1": {("ALSP", "one function"), ("UQ-AGD", "one function")},
-        "ablation_increment": set(selected),
-    }
-    for name, deps in uses.items():
-        if deps & changed:
-            print(f"{name}:")
-            t0 = time.perf_counter()
-            FIGURES[name](args)
-            print(f"  ({time.perf_counter() - t0:.0f}s; {time.perf_counter() - t_start:.0f}s so far)")
-        else:
-            print(f"{name}: unchanged settings, not rerun")
 
 
 # ---------------------------------------------------------------------------
@@ -996,7 +882,7 @@ def logistic_kappa(args):
     ridges = args.ridges or LOGISTIC_RIDGES
     if args.alsp_budget:
         LOGISTIC_ALSP_BUDGET = args.alsp_budget
-    rows, curves_by_kappa, t_start = [], {}, time.perf_counter()
+    t_start = time.perf_counter()
     for ridge in ridges:
         problem, basis, ref, norm2, tail, m_max, metric = _logistic_setup(ridge)
         kappa = problem.kappa
@@ -1162,12 +1048,11 @@ def logistic_alsp_tune(args):
 
 
 FIGURES = {
-    "fig1a": fig1a, "fig1b": fig1b, "fig2": fig2, "fig3": fig3,
-    "markowitz": markowitz, "lemma31": lemma31, "markowitz_uq": markowitz_uq, "cost": cost,
+    "quadratic_exact": quadratic_exact, "quadratic_mc": quadratic_mc, "fixed_vs_growing": fixed_vs_growing,
+    "markowitz": markowitz, "lemma31": lemma31, "markowitz_uq": markowitz_uq,
     "comparison": comparison, "comparison_adaptive": comparison_adaptive, "schedules": schedules,
     "ablation_batch1": ablation_batch1, "ablation_increment": ablation_increment, "alsp_sweep": alsp_sweep,
-    "revalidate": revalidate, "logistic_kappa": logistic_kappa,
-    "logistic_alsp_tune": logistic_alsp_tune, "sweep_extended": sweep_extended, "revalidate_extended": revalidate_extended,
+    "sweep_extended": sweep_extended, "logistic_kappa": logistic_kappa, "logistic_alsp_tune": logistic_alsp_tune,
 }
 
 
@@ -1177,8 +1062,9 @@ def build_parser():
     parser.add_argument("--trials", type=int, default=200, help="Monte Carlo repetitions averaged per curve")
     parser.add_argument("--mu", type=float, default=1.0)
     parser.add_argument("--L", type=float, default=200.0)
-    parser.add_argument("--power", type=float, default=0.7, help="fig3 schedule m_k = floor((k+10)^power) + 2")
-    parser.add_argument("--fixed-m", type=int, default=None, help="fixed level for fig3 (default: max m_k reached)")
+    parser.add_argument("--power", type=float, default=0.7, help="fixed_vs_growing schedule m_k = floor((k+10)^power) + 2")
+    parser.add_argument("--fixed-m", type=int, default=None,
+                        help="fixed level for fixed_vs_growing (default: max m_k reached)")
     parser.add_argument("--cost-trials", type=int, default=5,
                         help="trials for the gradient-evaluation comparisons (comparison and ablations)")
     parser.add_argument("--sweep-trials", type=int, default=5, help="trials per setting in alsp_sweep")
