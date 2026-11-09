@@ -172,28 +172,43 @@ def quadratic_mc(args):
 
 
 def fixed_vs_growing(args):
-    """UQ (growing m_k) versus a fixed, large level, both with M = 250 and maximal GD steps."""
+    """UQ (growing m_k) versus a fixed, large level, both with M = 250 and maximal GD steps.
+
+    The two methods use different numbers of coefficients, so the error is the total error
+    ||u^k - u*||_2^2 = ||u^k - P_{m_k}(u*)||_2^2 + ||R_{m_k}||_2^2, not the partial one.
+    """
     problem, basis = QuadraticProblem(mu=1.0, L=200.0), TrigBasis()
     schedule, K = power_schedule(args.power), 600
     m_fixed = args.fixed_m or schedule(K)
     ref = _reference(problem, basis, max(m_fixed, schedule(K)))
     est = MonteCarloGradient(problem, basis, n_samples=250)
-    trunc = np.sum(ref[:, m_fixed:] ** 2) + np.sum(basis.coefficients(problem.optimum, 4096, N_QUAD)[:, ref.shape[1]:] ** 2)
-    print(f"  m_k = floor((k+10)^{args.power}) + 2 reaches m = {schedule(K)}; fixed level m = {m_fixed}, ||R_m||^2 = {trunc:.2e} (both components), "
-          f"C_G = {1 + 2 * basis.Q(m_fixed) / 250:.3f}")
+    fine = basis.coefficients(problem.optimum, 4096, N_QUAD)
+    total = np.sum(fine**2)
+    tail = lambda m: total - np.sum(fine[:, :m] ** 2)  # noqa: E731  ||R_m||^2, both components
+    print(f"  m_k = floor((k+10)^{args.power}) + 2 reaches m = {schedule(K)}; fixed level m = {m_fixed}, "
+          f"||R_m||^2 = {tail(m_fixed):.2e} (both components), C_G = {1 + 2 * basis.Q(m_fixed) / 250:.3f}")
 
-    curves = {}
+    curves, seconds = {}, {}
     for label, sched in [("Full UQ method", schedule), ("Fixed amount of basis functions", constant_schedule(m_fixed))]:
         t0 = time.perf_counter()
         res = uq_gradient_descent(
             est, sched, K, gd_step_size(problem, basis, est),
             q=problem.q, reference=ref, n_trials=args.trials, seed=args.seed,
         )
-        print(f"  {label}: {(time.perf_counter() - t0):.2f}s for {args.trials} trials")
-        curves[label] = res.mean_error
+        seconds[label] = time.perf_counter() - t0
+        print(f"  {label}: {seconds[label]:.2f}s for {args.trials} trials")
+        curves[label] = res.mean_error + np.array([tail(m) for m in res.levels])
+
+    uq, fixed = curves["Full UQ method"], curves["Fixed amount of basis functions"]
+    k_eq = int(round(K * seconds["Full UQ method"] / seconds["Fixed amount of basis functions"]))
+    below = np.nonzero(uq < fixed)[0]
+    print(f"  total error at k = {K}: UQ {uq[-1]:.2e}, fixed {fixed[-1]:.2e}; UQ below fixed from k = {below[0] + 1} "
+          f"({len(below)} of {K} iterations)")
+    print(f"  equal runtime: fixed reaches k = {k_eq} in the UQ run's time, error {fixed[k_eq - 1]:.2e}, "
+          f"ratio {fixed[k_eq - 1] / uq[-1]:.0f}")
     colors = {"Full UQ method": COLORS["GD"], "Fixed amount of basis functions": COLORS["AGD"]}
     _plot(curves, f"Fixed vs growing basis ({args.trials} trials)", args.out / "fixed_vs_growing", colors,
-          paper=args.paper)
+          paper=args.paper, ylabel=r"$\|u^k - u^*\|_2^2$")
 
 
 # ---------------------------------------------------------------------------
